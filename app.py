@@ -825,13 +825,50 @@ with tab2:
             """, unsafe_allow_html=True)
 
     if camera_active:
-        # DirectShow backend for fast webcam initialization on Windows
-        cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(camera_index)
+        # Try selected camera index first, then auto-scan available camera indices
+        cap = None
+        for idx in [camera_index, 0, 1, 2]:
+            temp_cap = cv2.VideoCapture(idx)
+            if temp_cap.isOpened():
+                cap = temp_cap
+                break
+            temp_cap.release()
 
-        if not cap.isOpened():
-            stframe.error("❌ Could not open camera device. Please check your camera connection and ensure it is not in use by another program.")
+        if cap is None or not cap.isOpened():
+            stframe.markdown("""
+            <div style="background: #eff6ff; color: #1e40af; padding: 1rem; border-radius: 12px; border: 1px solid #bfdbfe; margin-bottom: 1rem;">
+                <strong>🌐 Browser Webcam Mode (Cloud Deployment Active)</strong><br/>
+                Direct hardware stream is unavailable on Cloud servers. Capture live frames using your browser camera below:
+            </div>
+            """, unsafe_allow_html=True)
+
+            camera_file = st.camera_input("📷 Capture Live Frame from Browser Webcam", key="fallback_cam")
+            if camera_file:
+                bytes_data = camera_file.getvalue()
+                file_bytes = np.frombuffer(bytes_data, np.uint8)
+                frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+                if frame is not None:
+                    results = model(frame, conf=confidence, verbose=False)
+                    annotated_frame = results[0].plot()
+
+                    fire_count = 0
+                    smoke_count = 0
+                    boxes = results[0].boxes
+                    if len(boxes) > 0:
+                        for box in boxes:
+                            cls = int(box.cls[0])
+                            cls_name = results[0].names[cls].lower()
+                            if "fire" in cls_name:
+                                fire_count += 1
+                            elif "smoke" in cls_name:
+                                smoke_count += 1
+
+                    fire_metric.metric("🔥 Fire Detected", fire_count, delta="ACTIVE" if fire_count > 0 else None, delta_color="inverse")
+                    smoke_metric.metric("💨 Smoke Detected", smoke_count, delta="ACTIVE" if smoke_count > 0 else None, delta_color="inverse")
+
+                    display_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+                    stframe.image(display_rgb, caption="Analyzed Live Snapshot", use_container_width=True)
         else:
             fire_total = 0
             smoke_total = 0
