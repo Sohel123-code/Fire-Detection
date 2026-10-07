@@ -359,9 +359,25 @@ class YOLOVideoProcessor(VideoProcessorBase):
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
         if model is not None:
-            results = model(img, conf=self.conf, verbose=False)
-            annotated = results[0].plot()
-            return av.VideoFrame.from_ndarray(annotated, format="bgr24")
+            try:
+                results = model(img, conf=self.conf, verbose=False)
+                annotated = results[0].plot()
+
+                # Add visual live detection status overlay on the streaming video frame
+                cv2.putText(
+                    annotated,
+                    "LIVE FIRE & SMOKE DETECTION",
+                    (15, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 0, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+                return av.VideoFrame.from_ndarray(annotated, format="bgr24")
+            except Exception as e:
+                print("WebRTC live stream detection error:", e)
         return frame
 
 # ==============================
@@ -795,7 +811,7 @@ with tab2:
         </div>
         """, unsafe_allow_html=True)
 
-        webrtc_streamer(
+        webrtc_ctx = webrtc_streamer(
             key="fire-smoke-live-stream",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTCConfiguration(
@@ -805,6 +821,9 @@ with tab2:
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )
+
+        if webrtc_ctx.video_processor:
+            webrtc_ctx.video_processor.conf = confidence
 
     else:
         cam_col1, cam_col2 = st.columns([3, 1])
