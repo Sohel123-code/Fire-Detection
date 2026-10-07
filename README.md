@@ -54,7 +54,8 @@ streamlit run app.py
 fire-detection/
 ├── app.py                 # Streamlit web app
 ├── detect.py              # Standalone detection script
-├── best.pt                # YOLO11 trained weights
+├── best_new.pt            # YOLO11 trained weights (primary model)
+├── best.pt                # YOLO11 trained weights (fallback model)
 ├── requirements.txt       # Python dependencies
 ├── packages.txt           # System dependencies (apt)
 ├── .streamlit/
