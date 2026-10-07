@@ -757,204 +757,129 @@ with tab2:
     st.markdown("""
     <div class="upload-zone">
         <div class="upload-icon">📷</div>
-        <div class="upload-text">Live Camera Fire & Smoke Detection</div>
-        <div class="upload-hint">Real-time detection using your browser webcam or local camera</div>
+        <div class="upload-text">Live Personal Camera Stream</div>
+        <div class="upload-hint">Real-time continuous fire & smoke detection using your webcam</div>
     </div>
     """, unsafe_allow_html=True)
 
-    cam_mode = st.radio(
-        "Camera Mode",
-        options=["🌐 Browser Camera (Cloud & Web Compatible)", "🖥️ Direct Camera Stream (Local Only)"],
-        index=0,
-        horizontal=True,
-        help="Use Browser Camera for Streamlit Cloud deployment or mobile/laptop web browsers. Use Direct Camera for local desktop OpenCV execution."
-    )
+    cam_col1, cam_col2 = st.columns([3, 1])
 
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    with cam_col2:
+        st.markdown('<div class="camera-panel">', unsafe_allow_html=True)
+        st.markdown('<div class="camera-panel-title">🎛️ Camera Controls</div>', unsafe_allow_html=True)
 
-    if "Browser Camera" in cam_mode:
-        # Browser Camera Mode using st.camera_input (Works on Streamlit Cloud & Browsers)
-        cam_col1, cam_col2 = st.columns([3, 1])
+        camera_index = st.selectbox(
+            "Camera Source",
+            options=[0, 1, 2],
+            format_func=lambda x: f"Camera {x}",
+            key="camera_source",
+        )
 
-        with cam_col2:
-            st.markdown('<div class="camera-panel">', unsafe_allow_html=True)
-            st.markdown('<div class="camera-panel-title">🎛️ Camera Status</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+        camera_active = st.toggle("🎥 Start Live Detection", value=False, key="camera_toggle")
+
+        if camera_active:
             st.markdown("""
             <div style="text-align: center; margin: 0.8rem 0;">
-                <span class="camera-live-badge">🌐 BROWSER WEBCAM</span>
+                <span class="camera-live-badge">🔴 LIVE STREAMING</span>
             </div>
             """, unsafe_allow_html=True)
-            
-            st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-            st.markdown('<div class="camera-panel-title">📊 Frame Detections</div>', unsafe_allow_html=True)
-            fire_metric = st.empty()
-            smoke_metric = st.empty()
-            status_metric = st.empty()
-            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="text-align: center; margin: 0.8rem 0;">
+                <span class="status-badge status-ready">⏸️ Standby</span>
+            </div>
+            """, unsafe_allow_html=True)
 
-        with cam_col1:
-            camera_file = st.camera_input("📷 Capture Frame from Webcam", key="browser_cam_input")
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
-            if camera_file:
-                # Read image bytes
-                bytes_data = camera_file.getvalue()
-                file_bytes = np.frombuffer(bytes_data, np.uint8)
-                frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        st.markdown('<div class="camera-panel-title">📊 Live Stats</div>', unsafe_allow_html=True)
+        fire_metric = st.empty()
+        smoke_metric = st.empty()
+        frame_metric = st.empty()
+        fps_metric = st.empty()
 
-                if frame is not None:
-                    # Run YOLO detection
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with cam_col1:
+        stframe = st.empty()
+
+        if not camera_active:
+            stframe.markdown("""
+            <div style="
+                background: #f0f4f8;
+                border-radius: 16px;
+                padding: 5rem 2rem;
+                text-align: center;
+                border: 1px solid #e2e8f0;
+            ">
+                <div style="font-size: 4rem; margin-bottom: 1rem;">📷</div>
+                <div style="color: #64748b; font-size: 1.1rem; font-weight: 500;">
+                    Live webcam stream will appear here
+                </div>
+                <div style="color: #94a3b8; font-size: 0.85rem; margin-top: 0.5rem;">
+                    Toggle "Start Live Detection" on the right to begin real-time streaming
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    if camera_active:
+        # DirectShow backend for fast webcam initialization on Windows
+        cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(camera_index)
+
+        if not cap.isOpened():
+            stframe.error("❌ Could not open camera device. Please check your camera connection and ensure it is not in use by another program.")
+        else:
+            fire_total = 0
+            smoke_total = 0
+            frame_count = 0
+            start_time = time.time()
+
+            try:
+                while cap.isOpened() and st.session_state.get("camera_toggle", False):
+                    ret, frame = cap.read()
+                    if not ret:
+                        stframe.warning("⚠️ Camera feed lost. Please toggle off and on to restart.")
+                        break
+
+                    frame_count += 1
                     results = model(frame, conf=confidence, verbose=False)
-                    annotated_frame = results[0].plot()
 
-                    # Count detections
-                    fire_count = 0
-                    smoke_count = 0
+                    frame_fire = 0
+                    frame_smoke = 0
                     boxes = results[0].boxes
                     if len(boxes) > 0:
                         for box in boxes:
                             cls = int(box.cls[0])
                             cls_name = results[0].names[cls].lower()
                             if "fire" in cls_name:
-                                fire_count += 1
+                                fire_total += 1
+                                frame_fire += 1
                             elif "smoke" in cls_name:
-                                smoke_count += 1
+                                smoke_total += 1
+                                frame_smoke += 1
 
-                    # Update metrics
-                    fire_metric.metric("🔥 Fire Detected", fire_count, delta="ACTIVE" if fire_count > 0 else None, delta_color="inverse")
-                    smoke_metric.metric("💨 Smoke Detected", smoke_count, delta="ACTIVE" if smoke_count > 0 else None, delta_color="inverse")
+                    annotated = results[0].plot()
+                    display_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                    stframe.image(display_frame, use_container_width=True)
 
-                    if fire_count > 0 and smoke_count > 0:
-                        status_metric.markdown('<span class="status-badge" style="background: #fee2e2; color: #991b1b;">⚠️ FIRE & SMOKE DETECTED!</span>', unsafe_allow_html=True)
-                    elif fire_count > 0:
-                        status_metric.markdown('<span class="status-badge" style="background: #fee2e2; color: #991b1b;">🔥 FIRE DETECTED!</span>', unsafe_allow_html=True)
-                    elif smoke_count > 0:
-                        status_metric.markdown('<span class="status-badge" style="background: #fef3c7; color: #92400e;">💨 SMOKE DETECTED!</span>', unsafe_allow_html=True)
-                    else:
-                        status_metric.markdown('<span class="status-badge status-ready">✅ ALL CLEAR</span>', unsafe_allow_html=True)
+                    if frame_count % 3 == 0:
+                        elapsed = time.time() - start_time
+                        current_fps = frame_count / elapsed if elapsed > 0 else 0
+                        fire_metric.metric("🔥 Fire", fire_total,
+                                           delta=f"+{frame_fire}" if frame_fire > 0 else None,
+                                           delta_color="inverse")
+                        smoke_metric.metric("💨 Smoke", smoke_total,
+                                            delta=f"+{frame_smoke}" if frame_smoke > 0 else None,
+                                            delta_color="inverse")
+                        frame_metric.metric("🖼️ Frames", f"{frame_count:,}")
+                        fps_metric.metric("⚡ FPS", f"{current_fps:.1f}")
 
-                    # Display annotated output image
-                    display_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                    st.markdown("### 🎯 Detection Result")
-                    st.image(display_rgb, caption="Analyzed Webcam Snapshot", use_container_width=True)
-
-    else:
-        # Direct OpenCV Camera Stream Mode (For local execution)
-        cam_col1, cam_col2 = st.columns([3, 1])
-
-        with cam_col2:
-            st.markdown('<div class="camera-panel">', unsafe_allow_html=True)
-            st.markdown('<div class="camera-panel-title">🎛️ Camera Controls</div>', unsafe_allow_html=True)
-
-            camera_index = st.selectbox(
-                "Camera Source Index",
-                options=[0, 1, 2],
-                format_func=lambda x: f"Camera {x}",
-                key="camera_source",
-            )
-
-            st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-            camera_active = st.toggle("🎥 Start Live Stream", value=False, key="camera_toggle")
-
-            if camera_active:
-                st.markdown("""
-                <div style="text-align: center; margin: 0.8rem 0;">
-                    <span class="camera-live-badge">🔴 LIVE STREAM</span>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown("""
-                <div style="text-align: center; margin: 0.8rem 0;">
-                    <span class="status-badge status-ready">⏸️ Standby</span>
-                </div>
-                """, unsafe_allow_html=True)
-
-            st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-            st.markdown('<div class="camera-panel-title">📊 Live Stats</div>', unsafe_allow_html=True)
-            fire_metric = st.empty()
-            smoke_metric = st.empty()
-            frame_metric = st.empty()
-            fps_metric = st.empty()
-
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with cam_col1:
-            stframe = st.empty()
-
-            if not camera_active:
-                stframe.markdown("""
-                <div style="
-                    background: #f0f4f8;
-                    border-radius: 16px;
-                    padding: 5rem 2rem;
-                    text-align: center;
-                    border: 1px solid #e2e8f0;
-                ">
-                    <div style="font-size: 4rem; margin-bottom: 1rem;">📷</div>
-                    <div style="color: #64748b; font-size: 1.1rem; font-weight: 500;">
-                        Direct camera stream will appear here
-                    </div>
-                    <div style="color: #94a3b8; font-size: 0.85rem; margin-top: 0.5rem;">
-                        Note: Direct stream works on local machine. For Streamlit Cloud, switch to "Browser Camera".
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-        if camera_active:
-            try:
-                cap = cv2.VideoCapture(camera_index)
-
-                if not cap.isOpened():
-                    stframe.error("❌ Could not open local camera device. If running on Streamlit Cloud, please switch to 'Browser Camera' mode above.")
-                else:
-                    fire_total = 0
-                    smoke_total = 0
-                    frame_count = 0
-                    start_time = time.time()
-
-                    while cap.isOpened() and st.session_state.get("camera_toggle", False):
-                        ret, frame = cap.read()
-                        if not ret:
-                            stframe.warning("⚠️ Camera feed lost. Please toggle off and on to restart.")
-                            break
-
-                        frame_count += 1
-                        results = model(frame, conf=confidence, verbose=False)
-
-                        frame_fire = 0
-                        frame_smoke = 0
-                        boxes = results[0].boxes
-                        if len(boxes) > 0:
-                            for box in boxes:
-                                cls = int(box.cls[0])
-                                cls_name = results[0].names[cls].lower()
-                                if "fire" in cls_name:
-                                    fire_total += 1
-                                    frame_fire += 1
-                                elif "smoke" in cls_name:
-                                    smoke_total += 1
-                                    frame_smoke += 1
-
-                        annotated = results[0].plot()
-                        display_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-                        stframe.image(display_frame, use_container_width=True)
-
-                        if frame_count % 5 == 0:
-                            elapsed = time.time() - start_time
-                            current_fps = frame_count / elapsed if elapsed > 0 else 0
-                            fire_metric.metric("🔥 Fire", fire_total,
-                                               delta=f"+{frame_fire}" if frame_fire > 0 else None,
-                                               delta_color="inverse")
-                            smoke_metric.metric("💨 Smoke", smoke_total,
-                                                delta=f"+{frame_smoke}" if frame_smoke > 0 else None,
-                                                delta_color="inverse")
-                            frame_metric.metric("🖼️ Frames", f"{frame_count:,}")
-                            fps_metric.metric("⚡ FPS", f"{current_fps:.1f}")
-
-                    cap.release()
-            except Exception as e:
-                stframe.error(f"❌ Camera error: {e}. Please switch to 'Browser Camera' mode.")
+            finally:
+                cap.release()
 
 # ==============================
 # FOOTER
