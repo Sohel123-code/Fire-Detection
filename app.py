@@ -9,6 +9,7 @@ import cv2
 import streamlit as st
 from streamlit_webrtc import WebRtcMode, webrtc_streamer
 from detection import Detector, LiveProcessor, MODEL_PATH
+from cloud_camera import render_cloud_camera
 
 st.set_page_config(page_title="FireWatch | Fire & Smoke Detection", page_icon="🔥",
                    layout="wide", initial_sidebar_state="expanded")
@@ -75,81 +76,87 @@ with st.sidebar:
 
 
 def rtc_configuration():
-    servers = [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]
     try:
         configured = st.secrets.get("webrtc", {}).get("ice_servers")
         if configured:
-            servers = [dict(server) for server in configured]
+            return {"iceServers": [dict(server) for server in configured]}
     except FileNotFoundError:
         pass
-    return {"iceServers": servers}
+    # Allow streamlit-webrtc to discover configured TURN provider credentials.
+    return None
 
 
 if page == "Live camera":
-    heading, badge = st.columns([3, 1])
-    with heading:
+    connection = st.radio("Camera connection", ["Cloud camera", "WebRTC (advanced)"], horizontal=True)
+    if connection == "Cloud camera":
         st.subheader("Live camera")
-        st.caption("Continuous predictions · annotated video · microphone off")
-    with badge:
-        camera_on = st.toggle("Camera on", value=True, key="camera_on")
+        st.caption("Click Start camera once. Detection continues until you stop the camera.")
+        render_cloud_camera(detector, confidence)
+    else:
+        heading, badge = st.columns([3, 1])
+        with heading:
+            st.subheader("Live camera")
+            st.caption("Continuous predictions · annotated video · microphone off")
+        with badge:
+            camera_on = st.toggle("Camera on", value=True, key="camera_on")
 
-    video_column, help_column = st.columns([3, 1])
-    with video_column:
-        with st.container(border=True):
-            ctx = webrtc_streamer(
-                key="firewatch-live",
-                mode=WebRtcMode.SENDRECV,
-                rtc_configuration=rtc_configuration(),
-                desired_playing_state=camera_on,
-                video_processor_factory=lambda: LiveProcessor(detector, confidence),
-                media_stream_constraints={
-                    "video": {"width": {"ideal": 640}, "height": {"ideal": 480},
-                              "frameRate": {"ideal": 15, "max": 20}},
-                    "audio": False,
-                },
-                async_processing=True,
-                video_html_attrs={"autoPlay": True, "controls": False,
-                                  "muted": True, "playsInline": True},
-            )
-            if ctx.video_processor:
-                ctx.video_processor.set_confidence(confidence)
-    with help_column:
-        st.markdown("#### Ready when you are")
-        st.write("Allow camera access in your browser. Predictions continue while the camera is on.")
-        st.markdown("**Fire** · detection alert\n\n**Smoke** · detection alert")
-        st.caption("Counts show objects in the latest predicted frame, not unique incidents.")
-        with st.expander("Camera help"):
-            st.write("Use localhost or an HTTPS address. Allow camera permission, close other apps using it, and select the correct camera in the video controls.")
-            st.write("If the connection stalls, switch the camera off and on. Restricted networks may need a TURN relay configured by the app owner.")
+        video_column, help_column = st.columns([3, 1])
+        with video_column:
+            with st.container(border=True):
+                ctx = webrtc_streamer(
+                    key="firewatch-live",
+                    mode=WebRtcMode.SENDRECV,
+                    rtc_configuration=rtc_configuration(),
+                    desired_playing_state=camera_on,
+                    video_processor_factory=lambda: LiveProcessor(detector, confidence),
+                    media_stream_constraints={
+                        "video": {"width": {"ideal": 640}, "height": {"ideal": 480},
+                                  "frameRate": {"ideal": 15, "max": 20}},
+                        "audio": False,
+                    },
+                    async_processing=True,
+                    video_html_attrs={"autoPlay": True, "controls": False,
+                                      "muted": True, "playsInline": True},
+                )
+                if ctx.video_processor:
+                    ctx.video_processor.set_confidence(confidence)
+        with help_column:
+            st.markdown("#### Ready when you are")
+            st.write("Allow camera access in your browser. Predictions continue while the camera is on.")
+            st.markdown("**Fire** · detection alert\n\n**Smoke** · detection alert")
+            st.caption("Counts show objects in the latest predicted frame, not unique incidents.")
+            with st.expander("Camera help"):
+                st.write("Use localhost or an HTTPS address. Allow camera permission, close other apps using it, and select the correct camera in the video controls.")
+                st.write("If the connection stalls, switch the camera off and on. Restricted networks may need a TURN relay configured by the app owner.")
 
-    @st.fragment(run_every=0.5)
-    def live_status():
-        processor = ctx.video_processor
-        stats = processor.snapshot() if processor else None
-        fresh = bool(stats and stats.last_prediction and time.monotonic() - stats.last_prediction < 5)
-        if not ctx.state.playing:
-            if camera_on:
-                st.info("Waiting for camera connection. Allow browser access or use START in the video controls.")
+        @st.fragment(run_every=0.5)
+        def live_status():
+            processor = ctx.video_processor
+            stats = processor.snapshot() if processor else None
+            fresh = bool(stats and stats.last_prediction and time.monotonic() - stats.last_prediction < 5)
+            if not ctx.state.playing:
+                if camera_on:
+                    st.info("Waiting for camera connection. Allow browser access or use START in the video controls.")
+                else:
+                    st.info("Camera off. Switch Camera on to begin continuous detection.")
+            elif stats and stats.error:
+                st.error(f"Prediction failed: {stats.error}. Switch the camera off and on to retry.")
+            elif not fresh:
+                st.warning("Camera connected · waiting for predictions. If this persists, restart the camera.")
+            elif stats.fire or stats.smoke:
+                st.error(f"Detection alert · {stats.fire} fire / {stats.smoke} smoke in the current frame")
             else:
-                st.info("Camera off. Switch Camera on to begin continuous detection.")
-        elif stats and stats.error:
-            st.error(f"Prediction failed: {stats.error}. Switch the camera off and on to retry.")
-        elif not fresh:
-            st.warning("Camera connected · waiting for predictions. If this persists, restart the camera.")
-        elif stats.fire or stats.smoke:
-            st.error(f"Detection alert · {stats.fire} fire / {stats.smoke} smoke in the current frame")
-        else:
-            st.success("Live · predicting continuously · no fire or smoke detected in the current frame")
-        valid = bool(ctx.state.playing and fresh and not stats.error)
-        columns = st.columns(4)
-        for column, label, value in zip(columns, ["Fire in frame", "Smoke in frame", "Prediction FPS", "Frames analyzed"],
-                                       [stats.fire if valid else "—", stats.smoke if valid else "—",
-                                        f"{stats.fps:.1f}" if valid else "—", stats.frames if stats else 0]):
-            column.metric(label, value)
-        if valid:
-            st.caption(f"Latest inference: {stats.latency_ms:.0f} ms · model: best_new.pt · confidence: {confidence:.0%}")
+                st.success("Live · predicting continuously · no fire or smoke detected in the current frame")
+            valid = bool(ctx.state.playing and fresh and not stats.error)
+            columns = st.columns(4)
+            for column, label, value in zip(columns, ["Fire in frame", "Smoke in frame", "Prediction FPS", "Frames analyzed"],
+                                           [stats.fire if valid else "—", stats.smoke if valid else "—",
+                                            f"{stats.fps:.1f}" if valid else "—", stats.frames if stats else 0]):
+                column.metric(label, value)
+            if valid:
+                st.caption(f"Latest inference: {stats.latency_ms:.0f} ms · model: best_new.pt · confidence: {confidence:.0%}")
 
-    live_status()
+        live_status()
 
 else:
     st.subheader("Analyze a video")

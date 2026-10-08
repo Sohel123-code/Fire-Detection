@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+* { box-sizing: border-box; } body { margin: 0; font: 14px system-ui, sans-serif; color: #14263e; }
+.controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0 14px; }
+button, select { font: inherit; border-radius: 8px; padding: 10px 14px; border: 1px solid #ccd5e1; }
+button { cursor: pointer; background: #e86132; color: white; border: 0; font-weight: 600; }
+button:disabled { opacity: .5; cursor: default; } #stop { background: #203c58; }
+.views { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+video, img { width: 100%; aspect-ratio: 4/3; object-fit: contain; background: #10213a; border-radius: 12px; }
+img:not([src]) { visibility: hidden; } .result { background: #10213a; border-radius: 12px; }
+label { display: block; font-weight: 600; margin-bottom: 8px; }
+#status { padding: 10px 0; line-height: 1.5; } #status.error { color: #b42318; }
+.hint { color: #65738a; font-size: 12px; }
+@media(max-width:540px) { .views { grid-template-columns: 1fr; } }
+</style></head>
+<body>
+<div class="controls"><button id="start">Start camera</button><button id="stop" disabled>Stop camera</button>
+<select id="facing" aria-label="Camera"><option value="user">Front camera</option><option value="environment">Rear camera</option></select></div>
+<div id="status" role="status" aria-live="polite">Click Start camera and allow camera access.</div>
+<div class="views"><div><label>Live camera</label><video id="video" autoplay muted playsinline></video></div>
+<div><label>Latest prediction</label><div class="result"><img id="prediction" alt="Latest frame with fire and smoke predictions"></div></div></div>
+<p class="hint">The camera stays live while each frame is analyzed. Predictions update as results arrive. Microphone off.</p>
+<canvas id="capture" hidden></canvas>
+<script src="camera.js"></script>
+</body></html>

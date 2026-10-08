@@ -12,8 +12,10 @@ class AppTests(unittest.TestCase):
         processor = Mock()
         processor.snapshot.return_value = stats or LiveStats()
         context = SimpleNamespace(state=SimpleNamespace(playing=playing), video_processor=processor)
-        with patch("streamlit_webrtc.webrtc_streamer", return_value=context):
+        fake_detector = Mock(model=SimpleNamespace(names={0: "smoke", 1: "fire"}))
+        with patch("detection.Detector", return_value=fake_detector), patch("streamlit_webrtc.webrtc_streamer", return_value=context), patch("cloud_camera.declare_component", return_value=Mock(return_value=None)):
             app = AppTest.from_file("app.py").run(timeout=60)
+            next(r for r in app.radio if r.label == "Camera connection").set_value("WebRTC (advanced)").run()
         self.assertFalse(app.exception)
         return app, context
 
@@ -38,7 +40,7 @@ class AppTests(unittest.TestCase):
     def test_prediction_error_and_upload_navigation(self):
         app, _ = self.render(True, LiveStats(error="test failure"))
         self.assertIn("test failure", app.error[0].value)
-        app.radio[0].set_value("Analyze video").run()
+        next(r for r in app.radio if r.label == "Workspace").set_value("Analyze video").run()
         self.assertFalse(app.exception)
         self.assertEqual(app.subheader[0].value, "Analyze a video")
 
