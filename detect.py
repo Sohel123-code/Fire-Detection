@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 import cv2
 from ultralytics import YOLO
 
@@ -6,7 +6,7 @@ from ultralytics import YOLO
 # FILE PATHS
 # ==============================
 
-MODEL_PATH = "best_new.pt" if os.path.exists("best_new.pt") else "best.pt"
+MODEL_PATH = str(Path(__file__).resolve().parent / "best_new.pt")
 VIDEO_PATH = "video.mp4"
 OUTPUT_PATH = "output.mp4"
 

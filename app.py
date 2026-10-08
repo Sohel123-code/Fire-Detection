@@ -1,959 +1,230 @@
-import streamlit as st
-import cv2
-import tempfile
-import os
-import time
-import numpy as np
-import av
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
-from ultralytics import YOLO
+"""FireWatch: continuous browser camera inference and video analysis."""
+from fractions import Fraction
 from pathlib import Path
+import hashlib
+import tempfile
+import time
+import av
+import cv2
+import streamlit as st
+from streamlit_webrtc import WebRtcMode, webrtc_streamer
+from detection import Detector, LiveProcessor, MODEL_PATH
 
-# ==============================
-# PAGE CONFIG
-# ==============================
-
-st.set_page_config(
-    page_title="🔥 Fire & Smoke Detection",
-    page_icon="🔥",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# ==============================
-# CUSTOM CSS
-# ==============================
-
+st.set_page_config(page_title="FireWatch | Fire & Smoke Detection", page_icon="🔥",
+                   layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-
-    /* Global styles - White background, dark blue text */
-    .stApp {
-        font-family: 'Inter', sans-serif;
-        background-color: #ffffff !important;
-        color: #0f3460 !important;
-    }
-
-    /* Override Streamlit default dark backgrounds */
-    .stApp > header {
-        background-color: #ffffff !important;
-    }
-
-    section[data-testid="stSidebar"] {
-        background-color: #f0f4f8 !important;
-    }
-
-    section[data-testid="stSidebar"] * {
-        color: #0f3460 !important;
-    }
-
-    /* Hero header */
-    .hero-header {
-        background: linear-gradient(135deg, #0f3460 0%, #16213e 50%, #1a1a2e 100%);
-        border-radius: 20px;
-        padding: 2.5rem 3rem;
-        margin-bottom: 2rem;
-        border: 1px solid rgba(15, 52, 96, 0.2);
-        box-shadow: 0 10px 40px rgba(15, 52, 96, 0.15);
-        position: relative;
-        overflow: hidden;
-    }
-
-    .hero-header::before {
-        content: '';
-        position: absolute;
-        top: -50%;
-        right: -20%;
-        width: 400px;
-        height: 400px;
-        background: radial-gradient(circle, rgba(255, 255, 255, 0.08) 0%, transparent 70%);
-        border-radius: 50%;
-    }
-
-    .hero-title {
-        font-size: 2.4rem;
-        font-weight: 800;
-        background: linear-gradient(135deg, #ffffff, #e2e8f0);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 0.5rem;
-        letter-spacing: -0.5px;
-    }
-
-    .hero-subtitle {
-        color: #a0c4e8;
-        font-size: 1.05rem;
-        font-weight: 400;
-        letter-spacing: 0.3px;
-    }
-
-    /* Stat cards */
-    .stat-card {
-        background: #ffffff;
-        border-radius: 16px;
-        padding: 1.5rem;
-        text-align: center;
-        border: 1px solid #e2e8f0;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(15, 52, 96, 0.08);
-    }
-
-    .stat-card:hover {
-        border-color: #0f3460;
-        transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(15, 52, 96, 0.15);
-    }
-
-    .stat-value {
-        font-size: 1.8rem;
-        font-weight: 700;
-        color: #0f3460;
-        margin-bottom: 0.25rem;
-    }
-
-    .stat-label {
-        font-size: 0.85rem;
-        color: #64748b;
-        font-weight: 500;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-
-    /* Upload area */
-    .upload-zone {
-        background: #f8fafc;
-        border: 2px dashed #0f3460;
-        border-radius: 20px;
-        padding: 3rem 2rem;
-        text-align: center;
-        transition: all 0.3s ease;
-        margin: 1.5rem 0;
-    }
-
-    .upload-zone:hover {
-        border-color: #16213e;
-        background: #eef2f7;
-    }
-
-    .upload-icon {
-        font-size: 3rem;
-        margin-bottom: 1rem;
-    }
-
-    .upload-text {
-        color: #0f3460;
-        font-size: 1.1rem;
-        font-weight: 500;
-    }
-
-    .upload-hint {
-        color: #64748b;
-        font-size: 0.85rem;
-        margin-top: 0.5rem;
-    }
-
-    /* Status badge */
-    .status-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 0.5rem 1.2rem;
-        border-radius: 50px;
-        font-size: 0.85rem;
-        font-weight: 600;
-        letter-spacing: 0.5px;
-    }
-
-    .status-ready {
-        background: rgba(34, 197, 94, 0.1);
-        color: #16a34a;
-        border: 1px solid rgba(34, 197, 94, 0.3);
-    }
-
-    .status-processing {
-        background: rgba(15, 52, 96, 0.1);
-        color: #0f3460;
-        border: 1px solid rgba(15, 52, 96, 0.3);
-        animation: pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.7; }
-    }
-
-    .status-done {
-        background: rgba(15, 52, 96, 0.1);
-        color: #0f3460;
-        border: 1px solid rgba(15, 52, 96, 0.3);
-    }
-
-    /* Results section */
-    .results-header {
-        background: #f0f4f8;
-        border-radius: 16px;
-        padding: 1.5rem 2rem;
-        margin: 1.5rem 0;
-        border: 1px solid #d1dce6;
-    }
-
-    .results-title {
-        font-size: 1.3rem;
-        font-weight: 700;
-        color: #0f3460;
-        margin-bottom: 0.3rem;
-    }
-
-    /* Detection label */
-    .detection-label {
-        display: inline-block;
-        padding: 0.3rem 0.8rem;
-        border-radius: 8px;
-        font-size: 0.8rem;
-        font-weight: 600;
-        margin: 0.2rem;
-    }
-
-    .label-fire {
-        background: rgba(239, 68, 68, 0.1);
-        color: #dc2626;
-        border: 1px solid rgba(239, 68, 68, 0.3);
-    }
-
-    .label-smoke {
-        background: rgba(100, 116, 139, 0.1);
-        color: #475569;
-        border: 1px solid rgba(100, 116, 139, 0.3);
-    }
-
-    /* Sidebar styling */
-    .sidebar-section {
-        background: #ffffff;
-        border-radius: 12px;
-        padding: 1.2rem;
-        margin-bottom: 1rem;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 2px 8px rgba(15, 52, 96, 0.06);
-    }
-
-    .sidebar-title {
-        font-size: 0.8rem;
-        font-weight: 700;
-        color: #0f3460;
-        text-transform: uppercase;
-        letter-spacing: 1.5px;
-        margin-bottom: 0.8rem;
-    }
-
-    /* Camera live badge */
-    .camera-live-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 0.5rem 1.2rem;
-        border-radius: 50px;
-        font-size: 0.85rem;
-        font-weight: 700;
-        background: rgba(239, 68, 68, 0.1);
-        color: #dc2626;
-        border: 1px solid rgba(239, 68, 68, 0.3);
-        animation: livePulse 1.5s infinite;
-        letter-spacing: 1px;
-    }
-
-    @keyframes livePulse {
-        0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-        50% { opacity: 0.85; box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
-    }
-
-    /* Camera panel */
-    .camera-panel {
-        background: #f8fafc;
-        border-radius: 16px;
-        padding: 1.5rem;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 4px 15px rgba(15, 52, 96, 0.08);
-    }
-
-    .camera-panel-title {
-        font-size: 0.8rem;
-        font-weight: 700;
-        color: #0f3460;
-        text-transform: uppercase;
-        letter-spacing: 1.5px;
-        margin-bottom: 1rem;
-    }
-
-    /* Footer */
-    .footer {
-        text-align: center;
-        padding: 2rem 0 1rem;
-        color: #64748b;
-        font-size: 0.8rem;
-        border-top: 1px solid #e2e8f0;
-        margin-top: 3rem;
-    }
-
-    /* Hide default streamlit elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-
-    /* Progress bar custom */
-    .stProgress > div > div > div > div {
-        background: linear-gradient(90deg, #0f3460, #1a5276);
-        border-radius: 10px;
-    }
-
-    /* Divider styling */
-    .section-divider {
-        height: 1px;
-        background: linear-gradient(90deg, transparent, #0f3460, transparent);
-        margin: 2rem 0;
-        border: none;
-        opacity: 0.2;
-    }
-
-    /* Tabs styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background: #f0f4f8;
-        border-radius: 12px;
-        padding: 0.4rem;
-    }
-
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px;
-        font-weight: 600;
-        font-size: 0.95rem;
-        padding: 0.6rem 1.5rem;
-        color: #64748b;
-    }
-
-    .stTabs [aria-selected="true"] {
-        background: #0f3460 !important;
-        color: #ffffff !important;
-    }
+.stApp { background: #f5f7fb; }
+.block-container { max-width: 1440px; padding-top: 2rem; }
+[data-testid="stSidebar"] { background: #fff; border-right: 1px solid #e4e9f1; }
+.hero { background: linear-gradient(115deg,#10213a,#203c58); padding: 2rem 2.4rem;
+        border-radius: 20px; color: white; margin-bottom: 1.6rem; }
+.eyebrow { color: #ffbd8b; font-size: .75rem; letter-spacing: .18em; font-weight: 700; }
+.hero h1 { color: white; font-size: 2.5rem; padding: .4rem 0; letter-spacing: -.04em; }
+.hero p { color: #c7d6e6; margin: 0; max-width: 680px; }
+[data-testid="stMetric"] { background: #fff; border: 1px solid #e4e9f1;
+                         border-radius: 14px; padding: 1rem; }
+[data-testid="stMetricLabel"] { color: #65738a; }
+[data-testid="stMetricValue"] { color: #14263e; }
+.footnote { color: #768399; font-size: .8rem; padding-top: 1.5rem; }
+@media(max-width:640px) {
+  .hero { padding: 1.4rem; } .hero h1 { font-size: 2rem; }
+  .block-container { padding-top: 1rem; }
+}
 </style>
 """, unsafe_allow_html=True)
 
-# ==============================
-# LOAD MODEL (cached)
-# ==============================
 
 @st.cache_resource
-def load_model():
-    for name in ["best_new.pt", "best.pt"]:
-        model_path = Path(__file__).parent / name
-        if model_path.exists():
-            return YOLO(str(model_path)), name
-    return None, None
+def load_detector(weights_version):
+    # Replacing the weights invalidates the resource cache.
+    return Detector()
 
-model, loaded_model_name = load_model()
-
-class YOLOVideoProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.conf = 0.40
-
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        img = frame.to_ndarray(format="bgr24")
-        if model is not None:
-            try:
-                results = model(img, conf=self.conf, verbose=False)
-                annotated = results[0].plot()
-
-                # Add visual live detection status overlay on the streaming video frame
-                cv2.putText(
-                    annotated,
-                    "LIVE FIRE & SMOKE DETECTION",
-                    (15, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 0, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-
-                return av.VideoFrame.from_ndarray(annotated, format="bgr24")
-            except Exception as e:
-                print("WebRTC live stream detection error:", e)
-        return frame
-
-# ==============================
-# HEADER
-# ==============================
 
 st.markdown("""
-<div class="hero-header">
-    <div class="hero-title">🔥 Fire & Smoke Detection</div>
-    <div class="hero-subtitle">Powered by YOLO11 — Real-time fire and smoke detection with deep learning</div>
+<div class="hero">
+  <div class="eyebrow">FIRE & SMOKE MONITORING</div>
+  <h1>FireWatch</h1>
+  <p>Keep an eye on what matters. Live camera predictions and video analysis,
+     with fire and smoke highlighted as they appear.</p>
 </div>
 """, unsafe_allow_html=True)
 
-# ==============================
-# SIDEBAR
-# ==============================
-
-with st.sidebar:
-    st.markdown("""
-    <div style="text-align: center; padding: 1rem 0;">
-        <span style="font-size: 2.5rem;">🛡️</span>
-        <h2 style="color: #0f3460; margin: 0.5rem 0 0; font-size: 1.2rem; font-weight: 700;">Detection Settings</h2>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-    # Confidence threshold
-    st.markdown('<div class="sidebar-title">⚡ Confidence Threshold</div>', unsafe_allow_html=True)
-    confidence = st.slider(
-        "Minimum confidence for detection",
-        min_value=0.10,
-        max_value=0.95,
-        value=0.40,
-        step=0.05,
-        label_visibility="collapsed",
-    )
-
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-    # Model info
-    st.markdown('<div class="sidebar-title">🧠 Model Info</div>', unsafe_allow_html=True)
-    st.markdown(f"""
-    <div class="sidebar-section">
-        <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
-            <span style="color: #64748b; font-size: 0.85rem;">Model</span>
-            <span style="color: #0f3460; font-weight: 600; font-size: 0.85rem;">YOLO11</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
-            <span style="color: #64748b; font-size: 0.85rem;">Weights</span>
-            <span style="color: #0f3460; font-weight: 600; font-size: 0.85rem;">{loaded_model_name or "Not Found"}</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
-            <span style="color: #64748b; font-size: 0.85rem;">Confidence</span>
-            <span style="color: #0f3460; font-weight: 600; font-size: 0.85rem;">{confidence:.0%}</span>
-        </div>
-        <div style="display: flex; justify-content: space-between;">
-            <span style="color: #64748b; font-size: 0.85rem;">Classes</span>
-            <span style="color: #0f3460; font-weight: 600; font-size: 0.85rem;">Fire, Smoke</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-    # Detection classes legend
-    st.markdown('<div class="sidebar-title">🏷️ Detection Classes</div>', unsafe_allow_html=True)
-    st.markdown("""
-    <div class="sidebar-section">
-        <span class="detection-label label-fire">🔥 Fire</span>
-        <span class="detection-label label-smoke">💨 Smoke</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-    # Status
-    if model:
-        st.markdown("""
-        <div style="text-align: center;">
-            <span class="status-badge status-ready">● Model Ready</span>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.error("⚠️ Model weights (`best_new.pt` or `best.pt`) not found in project folder!")
-
-# ==============================
-# MAIN CONTENT
-# ==============================
-
-if not model:
-    st.error("❌ Model file (`best_new.pt` or `best.pt`) not found. Please place it in the project directory.")
+try:
+    with st.spinner("Loading best_new.pt…"):
+        detector = load_detector((MODEL_PATH.stat().st_mtime_ns, MODEL_PATH.stat().st_size))
+except Exception as exc:
+    st.error(f"Could not load best_new.pt: {exc}")
+    st.info("Place the trained best_new.pt weights beside app.py and restart the app.")
     st.stop()
 
-# ==============================
-# TABS
-# ==============================
+with st.sidebar:
+    st.title("🔥 FireWatch")
+    st.caption("YOUR DETECTION WORKSPACE")
+    page = st.radio("Workspace", ["Live camera", "Analyze video"], label_visibility="collapsed")
+    st.divider()
+    st.subheader("Detection settings")
+    confidence = st.slider("Confidence threshold", 0.10, 0.95, 0.40, 0.05,
+                           help="Lower values show more predictions. Higher values require more confidence.")
+    st.caption("Changes apply to the running camera without restarting it.")
+    st.divider()
+    st.caption("ACTIVE MODEL")
+    st.code("best_new.pt", language=None)
+    st.success("Model loaded")
+    st.caption("Classes: " + ", ".join(detector.model.names.values()))
 
-tab1, tab2 = st.tabs(["📹 Upload Video", "📷 Live Camera"])
 
-# ==============================
-# TAB 1: UPLOAD VIDEO
-# ==============================
+def rtc_configuration():
+    servers = [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]
+    try:
+        configured = st.secrets.get("webrtc", {}).get("ice_servers")
+        if configured:
+            servers = [dict(server) for server in configured]
+    except FileNotFoundError:
+        pass
+    return {"iceServers": servers}
 
-with tab1:
-    # Upload section
-    st.markdown("""
-    <div class="upload-zone">
-        <div class="upload-icon">📹</div>
-        <div class="upload-text">Upload a video for fire & smoke detection</div>
-        <div class="upload-hint">Supports MP4, AVI, MOV, MKV • Max 500MB</div>
-    </div>
-    """, unsafe_allow_html=True)
 
-    uploaded_file = st.file_uploader(
-        "Upload Video",
-        type=["mp4", "avi", "mov", "mkv"],
-        label_visibility="collapsed",
-    )
+if page == "Live camera":
+    heading, badge = st.columns([3, 1])
+    with heading:
+        st.subheader("Live camera")
+        st.caption("Continuous predictions · annotated video · microphone off")
+    with badge:
+        camera_on = st.toggle("Camera on", value=True, key="camera_on")
 
-    if uploaded_file is not None:
-        # Save uploaded file to temp location
-        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        tfile.write(uploaded_file.read())
-        tfile.flush()
-
-        # Open video to get info
-        cap = cv2.VideoCapture(tfile.name)
-
-        if not cap.isOpened():
-            st.error("❌ Could not open the uploaded video.")
-            st.stop()
-
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        duration = total_frames / fps if fps > 0 else 0
-
-        # Video stats
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div class="stat-value">{width}×{height}</div>
-                <div class="stat-label">Resolution</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with col2:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div class="stat-value">{fps:.0f}</div>
-                <div class="stat-label">FPS</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with col3:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div class="stat-value">{total_frames:,}</div>
-                <div class="stat-label">Total Frames</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with col4:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div class="stat-value">{duration:.1f}s</div>
-                <div class="stat-label">Duration</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-        # Run detection button
-        col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
-        with col_btn2:
-            run_detection = st.button(
-                "🚀 Run Detection",
-                use_container_width=True,
-                type="primary",
+    video_column, help_column = st.columns([3, 1])
+    with video_column:
+        with st.container(border=True):
+            ctx = webrtc_streamer(
+                key="firewatch-live",
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration=rtc_configuration(),
+                desired_playing_state=camera_on,
+                video_processor_factory=lambda: LiveProcessor(detector, confidence),
+                media_stream_constraints={
+                    "video": {"width": {"ideal": 640}, "height": {"ideal": 480},
+                              "frameRate": {"ideal": 15, "max": 20}},
+                    "audio": False,
+                },
+                async_processing=True,
+                video_html_attrs={"autoPlay": True, "controls": False,
+                                  "muted": True, "playsInline": True},
             )
+            if ctx.video_processor:
+                ctx.video_processor.set_confidence(confidence)
+    with help_column:
+        st.markdown("#### Ready when you are")
+        st.write("Allow camera access in your browser. Predictions continue while the camera is on.")
+        st.markdown("**Fire** · detection alert\n\n**Smoke** · detection alert")
+        st.caption("Counts show objects in the latest predicted frame, not unique incidents.")
+        with st.expander("Camera help"):
+            st.write("Use localhost or an HTTPS address. Allow camera permission, close other apps using it, and select the correct camera in the video controls.")
+            st.write("If the connection stalls, switch the camera off and on. Restricted networks may need a TURN relay configured by the app owner.")
 
-        if run_detection:
-            st.markdown("""
-            <div style="text-align: center; margin: 1rem 0;">
-                <span class="status-badge status-processing">◉ Processing Video...</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Output file
-            output_path = tempfile.NamedTemporaryFile(
-                delete=False, suffix=".mp4"
-            ).name
-
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-            # Reset video capture
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-            # Progress
-            progress_bar = st.progress(0, text="Analyzing frames...")
-            frame_display = st.empty()
-            stats_display = st.empty()
-
-            fire_count = 0
-            smoke_count = 0
-            frames_with_detections = 0
-
-            for frame_idx in range(total_frames):
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                # YOLO detection
-                results = model(frame, conf=confidence, verbose=False)
-
-                # Count detections
-                boxes = results[0].boxes
-                if len(boxes) > 0:
-                    frames_with_detections += 1
-                    for box in boxes:
-                        cls = int(box.cls[0])
-                        cls_name = results[0].names[cls].lower()
-                        if "fire" in cls_name:
-                            fire_count += 1
-                        elif "smoke" in cls_name:
-                            smoke_count += 1
-
-                # Annotate frame
-                annotated_frame = results[0].plot()
-                out.write(annotated_frame)
-
-                # Update progress
-                progress = (frame_idx + 1) / total_frames
-                progress_bar.progress(
-                    progress,
-                    text=f"Processing frame {frame_idx + 1}/{total_frames} "
-                         f"({progress:.0%})"
-                )
-
-                # Show live preview every 10 frames
-                if frame_idx % 10 == 0:
-                    preview = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                    frame_display.image(preview, channels="RGB", use_container_width=True)
-
-            # Cleanup
-            cap.release()
-            out.release()
-
-            progress_bar.progress(1.0, text="✅ Detection complete!")
-
-            # Clear live preview
-            frame_display.empty()
-
-            st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-            # ==============================
-            # RESULTS
-            # ==============================
-
-            st.markdown("""
-            <div class="results-header">
-                <div class="results-title">📊 Detection Results</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Result stats
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-                st.markdown(f"""
-                <div class="stat-card">
-                    <div class="stat-value" style="color: #dc2626;">🔥 {fire_count}</div>
-                    <div class="stat-label">Fire Detections</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            with col2:
-                st.markdown(f"""
-                <div class="stat-card">
-                    <div class="stat-value" style="color: #475569;">💨 {smoke_count}</div>
-                    <div class="stat-label">Smoke Detections</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            with col3:
-                pct = (frames_with_detections / total_frames * 100) if total_frames > 0 else 0
-                st.markdown(f"""
-                <div class="stat-card">
-                    <div class="stat-value" style="color: #d97706;">{pct:.1f}%</div>
-                    <div class="stat-label">Frames with Alerts</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            with col4:
-                st.markdown(f"""
-                <div class="stat-card">
-                    <div class="stat-value" style="color: #16a34a;">{total_frames:,}</div>
-                    <div class="stat-label">Frames Processed</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-            # Re-encode to H.264 for full browser playback (seekable, compatible)
-            h264_output = tempfile.NamedTemporaryFile(
-                delete=False, suffix=".mp4"
-            ).name
-
-            try:
-                import subprocess
-                subprocess.run([
-                    "ffmpeg", "-y",
-                    "-i", output_path,
-                    "-vcodec", "libx264",
-                    "-pix_fmt", "yuv420p",
-                    "-movflags", "+faststart",
-                    "-acodec", "aac",
-                    "-strict", "experimental",
-                    h264_output
-                ], capture_output=True, check=True)
-                final_output = h264_output
-            except Exception:
-                # Fallback to mp4v output if ffmpeg not available
-                final_output = output_path
-
-            # Read video bytes into memory BEFORE cleanup
-            # This ensures the video stays fully playable even after temp files are removed
-            with open(final_output, "rb") as f:
-                video_bytes = f.read()
-
-            # Store in session state so the video persists across reruns
-            st.session_state["output_video_bytes"] = video_bytes
-
-            # Cleanup temp files now that bytes are in memory
-            try:
-                os.unlink(tfile.name)
-                os.unlink(output_path)
-                if final_output != output_path:
-                    os.unlink(h264_output)
-            except Exception:
-                pass
-
-            # Show output video from bytes (fully playable: play, pause, seek, replay)
-            st.markdown("### 🎬 Output Video")
-            st.video(video_bytes, format="video/mp4")
-
-            # Download button
-            col_dl1, col_dl2, col_dl3 = st.columns([1, 2, 1])
-            with col_dl2:
-                st.download_button(
-                    label="⬇️ Download Detected Video",
-                    data=video_bytes,
-                    file_name="fire_smoke_detected.mp4",
-                    mime="video/mp4",
-                    use_container_width=True,
-                    type="primary",
-                )
-
-            st.markdown("""
-            <div style="text-align: center; margin-top: 1rem;">
-                <span class="status-badge status-done">✅ Analysis Complete</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-        elif "output_video_bytes" in st.session_state:
-            # Re-display previously processed video on page rerun
-            video_bytes = st.session_state["output_video_bytes"]
-
-            st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-            st.markdown("""
-            <div class="results-header">
-                <div class="results-title">📊 Previous Detection Results</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            st.markdown("### 🎬 Output Video")
-            st.video(video_bytes, format="video/mp4")
-
-            col_dl1, col_dl2, col_dl3 = st.columns([1, 2, 1])
-            with col_dl2:
-                st.download_button(
-                    label="⬇️ Download Detected Video",
-                    data=video_bytes,
-                    file_name="fire_smoke_detected.mp4",
-                    mime="video/mp4",
-                    use_container_width=True,
-                    type="primary",
-                )
-
-            st.markdown("""
-            <div style="text-align: center; margin-top: 1rem;">
-                <span class="status-badge status-done">✅ Analysis Complete</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-# ==============================
-# TAB 2: LIVE CAMERA
-# ==============================
-
-with tab2:
-    st.markdown("""
-    <div class="upload-zone">
-        <div class="upload-icon">📷</div>
-        <div class="upload-text">Real-Time Live Camera Streaming & Parallel Detection</div>
-        <div class="upload-hint">Continuous video streaming with real-time YOLO11 fire & smoke detection</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    stream_mode = st.radio(
-        "Select Stream Engine",
-        options=["🌐 WebRTC Real-Time Live Video Stream (Browser & Cloud)", "🖥️ Direct OpenCV Camera Stream (Local Machine)"],
-        index=0,
-        horizontal=True,
-    )
-
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-    if "WebRTC" in stream_mode:
-        st.markdown("""
-        <div style="background: #f0fdf4; border: 1px solid #bbf7d0; padding: 1rem; border-radius: 12px; margin-bottom: 1rem;">
-            <strong style="color: #166534;">🎥 WebRTC Parallel Video Stream Active</strong><br/>
-            <span style="color: #15803d; font-size: 0.9rem;">
-                Click <strong>"START"</strong> below to open your camera. Live video stream will run continuously with parallel real-time fire & smoke detection overlay!
-            </span>
-        </div>
-        """, unsafe_allow_html=True)
-
-        webrtc_ctx = webrtc_streamer(
-            key="fire-smoke-live-stream",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTCConfiguration(
-                {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-            ),
-            video_processor_factory=YOLOVideoProcessor,
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-        )
-
-        if webrtc_ctx.video_processor:
-            webrtc_ctx.video_processor.conf = confidence
-
-    else:
-        cam_col1, cam_col2 = st.columns([3, 1])
-
-        with cam_col2:
-            st.markdown('<div class="camera-panel">', unsafe_allow_html=True)
-            st.markdown('<div class="camera-panel-title">🎛️ Camera Controls</div>', unsafe_allow_html=True)
-
-            camera_index = st.selectbox(
-                "Camera Source Index",
-                options=[0, 1, 2],
-                format_func=lambda x: f"Camera {x}",
-                key="camera_source",
-            )
-
-            st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-            camera_active = st.toggle("🎥 Start Direct Stream", value=False, key="camera_toggle")
-
-            if camera_active:
-                st.markdown("""
-                <div style="text-align: center; margin: 0.8rem 0;">
-                    <span class="camera-live-badge">🔴 LIVE STREAMING</span>
-                </div>
-                """, unsafe_allow_html=True)
+    @st.fragment(run_every=0.5)
+    def live_status():
+        processor = ctx.video_processor
+        stats = processor.snapshot() if processor else None
+        fresh = bool(stats and stats.last_prediction and time.monotonic() - stats.last_prediction < 5)
+        if not ctx.state.playing:
+            if camera_on:
+                st.info("Waiting for camera connection. Allow browser access or use START in the video controls.")
             else:
-                st.markdown("""
-                <div style="text-align: center; margin: 0.8rem 0;">
-                    <span class="status-badge status-ready">⏸️ Standby</span>
-                </div>
-                """, unsafe_allow_html=True)
+                st.info("Camera off. Switch Camera on to begin continuous detection.")
+        elif stats and stats.error:
+            st.error(f"Prediction failed: {stats.error}. Switch the camera off and on to retry.")
+        elif not fresh:
+            st.warning("Camera connected · waiting for predictions. If this persists, restart the camera.")
+        elif stats.fire or stats.smoke:
+            st.error(f"Detection alert · {stats.fire} fire / {stats.smoke} smoke in the current frame")
+        else:
+            st.success("Live · predicting continuously · no fire or smoke detected in the current frame")
+        valid = bool(ctx.state.playing and fresh and not stats.error)
+        columns = st.columns(4)
+        for column, label, value in zip(columns, ["Fire in frame", "Smoke in frame", "Prediction FPS", "Frames analyzed"],
+                                       [stats.fire if valid else "—", stats.smoke if valid else "—",
+                                        f"{stats.fps:.1f}" if valid else "—", stats.frames if stats else 0]):
+            column.metric(label, value)
+        if valid:
+            st.caption(f"Latest inference: {stats.latency_ms:.0f} ms · model: best_new.pt · confidence: {confidence:.0%}")
 
-            st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    live_status()
 
-            st.markdown('<div class="camera-panel-title">📊 Live Stats</div>', unsafe_allow_html=True)
-            fire_metric = st.empty()
-            smoke_metric = st.empty()
-            frame_metric = st.empty()
-            fps_metric = st.empty()
+else:
+    st.subheader("Analyze a video")
+    st.caption("Upload a recording to annotate each frame and download the results.")
+    uploaded = st.file_uploader("Choose a video", type=["mp4", "avi", "mov", "mkv"])
+    if uploaded:
+        video_data = uploaded.getvalue()
+        signature = hashlib.sha256(video_data).hexdigest()
+        if st.session_state.get("upload_signature") != signature:
+            st.session_state.pop("video_result", None)
+            st.session_state["upload_signature"] = signature
+        run = st.button("Analyze video", type="primary", use_container_width=True)
+        if run:
+            st.session_state.pop("video_result", None)
+            progress = st.progress(0, text="Preparing video…")
+            preview = st.empty()
+            try:
+                with tempfile.TemporaryDirectory() as directory:
+                    source = Path(directory) / ("input" + Path(uploaded.name).suffix)
+                    output = Path(directory) / "detected.mp4"
+                    source.write_bytes(video_data)
+                    cap = cv2.VideoCapture(str(source))
+                    try:
+                        if not cap.isOpened():
+                            raise ValueError("Could not read this video. Try another MP4 file.")
+                        fps = cap.get(cv2.CAP_PROP_FPS)
+                        fps = fps if 0 < fps <= 240 else 25.0
+                        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        frames, fire, smoke = 0, 0, 0
+                        with av.open(str(output), mode="w") as container:
+                            stream = container.add_stream("libx264", rate=Fraction(fps).limit_denominator(1001))
+                            stream.width = max(2, int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) // 2 * 2)
+                            stream.height = max(2, int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) // 2 * 2)
+                            stream.pix_fmt = "yuv420p"
+                            stream.options = {"preset": "veryfast", "crf": "23"}
+                            while True:
+                                ok, frame = cap.read()
+                                if not ok:
+                                    break
+                                annotated, counts = detector.predict(frame, confidence)
+                                frames += 1
+                                fire += counts["fire"]
+                                smoke += counts["smoke"]
+                                encoded_frame = av.VideoFrame.from_ndarray(annotated, format="bgr24")
+                                for packet in stream.encode(encoded_frame):
+                                    container.mux(packet)
+                                if frames == 1 or frames % 5 == 0:
+                                    preview.image(annotated, channels="BGR", use_container_width=True)
+                                    progress.progress(min(frames / total, 1.0) if total > 0 else 0,
+                                                      text=f"Analyzed {frames:,} frames")
+                            for packet in stream.encode():
+                                container.mux(packet)
+                        if not frames:
+                            raise ValueError("The video contains no readable frames.")
+                    finally:
+                        cap.release()
+                    st.session_state["video_result"] = {
+                        "data": output.read_bytes(), "frames": frames, "fire": fire,
+                        "smoke": smoke, "confidence": confidence,
+                    }
+                progress.progress(1.0, text="Analysis complete")
+                preview.empty()
+            except Exception as exc:
+                progress.empty()
+                st.error(f"Video analysis failed: {exc}")
+        result = st.session_state.get("video_result")
+        if result:
+            st.success("Analysis complete")
+            cols = st.columns(3)
+            for col, label, key in zip(cols, ["Frames analyzed", "Fire detections", "Smoke detections"], ["frames", "fire", "smoke"]):
+                col.metric(label, result[key])
+            st.caption(f"Counts include repeated detections across frames · confidence {result['confidence']:.0%} · output has no audio")
+            st.video(result["data"])
+            st.download_button("Download annotated video", result["data"],
+                               "firewatch_detected.mp4", "video/mp4", use_container_width=True)
 
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with cam_col1:
-            stframe = st.empty()
-
-            if not camera_active:
-                stframe.markdown("""
-                <div style="
-                    background: #f0f4f8;
-                    border-radius: 16px;
-                    padding: 5rem 2rem;
-                    text-align: center;
-                    border: 1px solid #e2e8f0;
-                ">
-                    <div style="font-size: 4rem; margin-bottom: 1rem;">📷</div>
-                    <div style="color: #64748b; font-size: 1.1rem; font-weight: 500;">
-                        Direct camera stream will appear here
-                    </div>
-                    <div style="color: #94a3b8; font-size: 0.85rem; margin-top: 0.5rem;">
-                        Toggle "Start Direct Stream" on the right to begin local streaming
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-        if camera_active:
-            cap = None
-            for idx in [camera_index, 0, 1, 2]:
-                temp_cap = cv2.VideoCapture(idx)
-                if temp_cap.isOpened():
-                    cap = temp_cap
-                    break
-                temp_cap.release()
-
-            if cap is None or not cap.isOpened():
-                stframe.error("❌ Could not open local camera device. Please check your camera connection or switch to WebRTC mode above.")
-            else:
-                fire_total = 0
-                smoke_total = 0
-                frame_count = 0
-                start_time = time.time()
-
-                try:
-                    while cap.isOpened() and st.session_state.get("camera_toggle", False):
-                        ret, frame = cap.read()
-                        if not ret:
-                            stframe.warning("⚠️ Camera feed lost. Please toggle off and on to restart.")
-                            break
-
-                        frame_count += 1
-                        results = model(frame, conf=confidence, verbose=False)
-
-                        frame_fire = 0
-                        frame_smoke = 0
-                        boxes = results[0].boxes
-                        if len(boxes) > 0:
-                            for box in boxes:
-                                cls = int(box.cls[0])
-                                cls_name = results[0].names[cls].lower()
-                                if "fire" in cls_name:
-                                    fire_total += 1
-                                    frame_fire += 1
-                                elif "smoke" in cls_name:
-                                    smoke_total += 1
-                                    frame_smoke += 1
-
-                        annotated = results[0].plot()
-                        display_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-                        stframe.image(display_frame, use_container_width=True)
-
-                        if frame_count % 3 == 0:
-                            elapsed = time.time() - start_time
-                            current_fps = frame_count / elapsed if elapsed > 0 else 0
-                            fire_metric.metric("🔥 Fire", fire_total,
-                                               delta=f"+{frame_fire}" if frame_fire > 0 else None,
-                                               delta_color="inverse")
-                            smoke_metric.metric("💨 Smoke", smoke_total,
-                                                delta=f"+{frame_smoke}" if frame_smoke > 0 else None,
-                                                delta_color="inverse")
-                            frame_metric.metric("🖼️ Frames", f"{frame_count:,}")
-                            fps_metric.metric("⚡ FPS", f"{current_fps:.1f}")
-
-                finally:
-                    cap.release()
-
-# ==============================
-# FOOTER
-# ==============================
-
-st.markdown("""
-<div class="footer">
-    <p>🔥 Fire & Smoke Detection System • Built with YOLO11 + Streamlit</p>
-</div>
-""", unsafe_allow_html=True)
+st.markdown('<div class="footnote">FireWatch · Fire & smoke detection powered by your trained model</div>',
+            unsafe_allow_html=True)
